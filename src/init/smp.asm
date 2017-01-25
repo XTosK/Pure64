@@ -1,6 +1,6 @@
 ; =============================================================================
-; Pure64 -- a 64-bit OS loader written in Assembly for x86-64 systems
-; Copyright (C) 2008-2013 Return Infinity -- see LICENSE.TXT
+; Pure64 -- a 64-bit OS/software loader written in Assembly for x86-64 systems
+; Copyright (C) 2008-2017 Return Infinity -- see LICENSE.TXT
 ;
 ; INIT SMP
 ; =============================================================================
@@ -20,15 +20,14 @@ init_smp:
 	xor eax, eax
 	xor edx, edx
 	mov rsi, [os_LocalAPICAddress]
-	add rsi, 0x20			; Add the offset for the APIC ID location
-	lodsd				; APIC ID is stored in bits 31:24
-	shr rax, 24			; AL now holds the BSP CPU's APIC ID
+	mov eax, [rsi+0x20]		; Add the offset for the APIC ID location
+	shr rax, 24			; APIC ID is stored in bits 31:24
 	mov dl, al			; Store BSP APIC ID in DL
 
 	mov al, '8'			; Start the AP's
 	mov [0x000B809E], al
 
-	mov rsi, 0x0000000000005100
+	mov esi, 0x00005100
 	xor eax, eax
 	xor ecx, ecx
 	mov cx, [cpu_detected]
@@ -64,7 +63,7 @@ wait1:
 	cmp rax, rbx
 	jg wait1
 
-	mov rsi, 0x0000000000005100
+	mov esi, 0x00005100
 	xor ecx, ecx
 	mov cx, [cpu_detected]
 smp_send_SIPI:
@@ -136,17 +135,6 @@ speedtest:
 	mov rcx, 10240
 	div rcx
 	mov [cpu_speed], ax
-
-; Clear the periodic flag in the RTC
-	mov al, 0x0B			; Status Register B
-	out 0x70, al			; Select the address
-	in al, 0x71			; Read the current settings
-	push rax
-	mov al, 0x0B			; Status Register B
-	out 0x70, al			; Select the address
-	pop rax
-	btc ax, 6			; Set Periodic(6)
-	out 0x71, al			; Write the new settings
 
 	mov al, 'E'
 	mov [0x000B809E], al

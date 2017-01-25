@@ -1,15 +1,15 @@
 ; =============================================================================
-; Pure64 -- a 64-bit OS loader written in Assembly for x86-64 systems
-; Copyright (C) 2008-2013 Return Infinity -- see LICENSE.TXT
+; Pure64 -- a 64-bit OS/software loader written in Assembly for x86-64 systems
+; Copyright (C) 2008-2017 Return Infinity -- see LICENSE.TXT
 ;
-; Loaded from the first stage. Gather information about the system while
-; in 16-bit mode (BIOS is still accessable), setup a minimal 64-bit
-; enviroment, copy the 64-bit kernel from the end of the Pure64 binary to 
-; the 1MiB memory mark and jump to it!
+; The first stage loader is required to gather information about the system
+; while the BIOS or UEFI is still available and load the Pure64 binary to
+; 0x00008000. Setup a minimal 64-bit environment, copy the 64-bit kernel from
+; the end of the Pure64 binary to the 1MiB memory mark and jump to it!
 ;
 ; Pure64 requires a payload for execution! The stand-alone pure64.sys file
 ; is not sufficient. You must append your kernel or software to the end of
-; the Pure64 binary. The maximum size of the kernel of software is 26KiB.
+; the Pure64 binary. The maximum size of the kernel or software is 26KiB.
 ;
 ; Windows - copy /b pure64.sys + kernel64.sys
 ; Unix - cat pure64.sys kernel64.sys > pure64.sys
@@ -17,9 +17,18 @@
 ; =============================================================================
 
 
-USE16
+USE32
 ORG 0x00008000
+
+PURE64SIZE	equ 6144		; Pad Pure64 to this length
+
 start:
+	jmp start32			; This command will be overwritten with 'NOP's before the AP's are started
+	nop
+	nop
+	nop
+
+USE16
 	cli				; Disable all interrupts
 	xor eax, eax
 	xor ebx, ebx
@@ -35,117 +44,33 @@ start:
 	mov gs, ax
 	mov esp, 0x8000			; Set a known free location for the stack
 
-ap_modify:
-	jmp start16			; This command will be overwritten with 'NOP's before the AP's are started
-	nop				; The 'jmp' is only 3 bytes
-
 %include "init/smp_ap.asm"		; AP's will start execution at 0x8000 and fall through to this code
 
 
-;db '_16_'				; Debug
 align 16
-
-USE16
-start16:
-	jmp 0x0000:clearcs
-
-clearcs:
-
-; Configure serial port
-	xor dx, dx			; First serial port
-	mov ax, 0000000011100011b	; 9600 baud, no parity, 1 stop bit, 8 data bits
-	int 0x14
-
-; Make sure the screen is set to 80x25 color text mode
-	mov ax, 0x0003			; Set to normal (80x25 text) video mode
-	int 0x10
-
-; Disable blinking
-	mov ax, 0x1003
-	mov bx, 0x0000
-	int 0x10
-
-; Print message
-	mov si, msg_initializing
-	call print_string_16
-
-; Check to make sure the CPU supports 64-bit mode... If not then bail out
-	mov eax, 0x80000000		; Extended-function 8000000h.
-	cpuid				; Is largest extended function
-	cmp eax, 0x80000000		; any function > 80000000h?
-	jbe no_long_mode		; If not, no long mode.
-	mov eax, 0x80000001		; Extended-function 8000001h.
-	cpuid				; Now EDX = extended-features flags.
-	bt edx, 29			; Test if long mode is supported.
-	jnc no_long_mode		; Exit if not supported.
-
-	call init_isa			; Setup legacy hardware
-
-; Hide the hardware cursor (interferes with print_string_16 if called earlier)
-	mov ax, 0x0200			; VIDEO - SET CURSOR POSITION
-	mov bx, 0x0000			; Page number
-	mov dx, 0x2000			; Row / Column
-	int 0x10
-
-; At this point we are done with real mode and BIOS interrupts. Jump to 32-bit mode.
-	lgdt [cs:GDTR32]		; Load GDT register
-
-	mov eax, cr0
-	or al, 0x01			; Set protected mode bit
-	mov cr0, eax
-
-	jmp 8:start32			; Jump to 32-bit protected mode
-
-; 16-bit function to print a sting to the screen
-print_string_16:			; Output string in SI to screen
-	pusha
-	mov ah, 0x0E			; http://www.ctyme.com/intr/rb-0106.htm
-print_string_16_repeat:
-	lodsb				; Get char from string
-	cmp al, 0
-	je print_string_16_done		; If char is zero, end of string
-	int 0x10			; Otherwise, print it
-	jmp print_string_16_repeat
-print_string_16_done:
-	popa
-	ret
-
-; Display an error message that the CPU does not support 64-bit mode
-no_long_mode:
-	mov si, msg_no64
-	call print_string_16
-	jmp $
-
-%include "init/isa.asm"
-
-align 16
-GDTR32:					; Global Descriptors Table Register
-dw gdt32_end - gdt32 - 1		; limit of GDT (size minus one)
-dq gdt32				; linear address of GDT
-
-align 16
-gdt32:
-dw 0x0000, 0x0000, 0x0000, 0x0000	; Null desciptor
-dw 0xFFFF, 0x0000, 0x9A00, 0x00CF	; 32-bit code desciptor
-dw 0xFFFF, 0x0000, 0x9200, 0x00CF	; 32-bit data desciptor
-gdt32_end:
-
-;db '_32_'				; Debug
-align 16
-
 
 ; =============================================================================
 ; 32-bit mode
 USE32
-
 start32:
-	mov eax, 16			; load 4 GB data descriptor
-	mov ds, ax			; to all data segment registers
+	mov eax, 16			; Set the correct segment registers
+	mov ds, ax
 	mov es, ax
+	mov ss, ax
 	mov fs, ax
 	mov gs, ax
-	mov ss, ax
+
+	mov edi, 0xb8000		; Clear the screen
+	mov ax, 0x0720
+	mov cx, 2000
+	rep stosw
+
+	mov edi, 0x5000			; Clear the info map
 	xor eax, eax
+	mov cx, 1024
+	rep stosd
+
+	xor eax, eax			; Clear all registers
 	xor ebx, ebx
 	xor ecx, ecx
 	xor edx, edx
@@ -158,6 +83,79 @@ start32:
 	mov [0x000B809C], al
 	mov al, '0'
 	mov [0x000B809E], al
+
+; Set up RTC
+; Port 0x70 is RTC Address, and 0x71 is RTC Data
+; http://www.nondot.org/sabre/os/files/MiscHW/RealtimeClockFAQ.txt
+rtc_poll:
+	mov al, 0x0A			; Status Register A
+	out 0x70, al			; Select the address
+	in al, 0x71			; Read the data
+	test al, 0x80			; Is there an update in process?
+	jne rtc_poll			; If so then keep polling
+	mov al, 0x0A			; Status Register A
+	out 0x70, al			; Select the address
+	mov al, 00100110b		; UIP (0), RTC@32.768KHz (010), Rate@1024Hz (0110)
+	out 0x71, al			; Write the data
+
+	; Remap PIC IRQ's
+	mov al, 00010001b		; begin PIC 1 initialization
+	out 0x20, al
+	mov al, 00010001b		; begin PIC 2 initialization
+	out 0xA0, al
+	mov al, 0x20			; IRQ 0-7: interrupts 20h-27h
+	out 0x21, al
+	mov al, 0x28			; IRQ 8-15: interrupts 28h-2Fh
+	out 0xA1, al
+	mov al, 4
+	out 0x21, al
+	mov al, 2
+	out 0xA1, al
+	mov al, 1
+	out 0x21, al
+	out 0xA1, al
+
+	; Mask all PIC interrupts
+	mov al, 0xFF
+	out 0x21, al
+	out 0xA1, al
+
+; Hide VGA hardware cursor
+	mov al, 0x0F		; Cursor Low Port
+	mov dx, 0x03D4
+	out dx, al
+	mov al, 0xFF
+	mov dx, 0x03D5
+	out dx, al
+	mov al, 0x0E		; Cursor High Port
+	mov dx, 0x03D4
+	out dx, al
+	mov al, 0xFF
+	mov dx, 0x03D5
+	out dx, al
+
+; Configure serial port
+	mov dx, 0x03F9
+	mov al, 0x00
+	out dx, al
+	mov al, 0x80
+	add dx, 2
+	out dx, al
+	mov al, 0x01		; Set divisor to 1 for 115200 baud
+	sub dx, 4
+	out dx, al
+	mov al, 0x00
+	add dx, 1
+	out dx, al
+	mov al, 0x03
+	add dx, 2
+	out dx, al
+	mov al, 0xC7
+	sub dx, 1
+	out dx, al
+	mov al, 0x0B
+	add dx, 2
+	out dx, al
 
 ; Clear out the first 4096 bytes of memory. This will store the 64-bit IDT, GDT, PML4, and PDP
 	mov ecx, 1024
@@ -258,9 +256,8 @@ pd_again:				; Create a 2 MiB page
 
 	jmp SYS64_CODE_SEL:start64	; Jump to 64-bit mode
 
-;db '_64_'				; Debug
-align 16
 
+align 16
 
 ; =============================================================================
 ; 64-bit mode
@@ -277,14 +274,14 @@ start64:
 	mov ah, 22
 	call os_move_cursor
 
-	xor rax, rax			; aka r0
-	xor rbx, rbx			; aka r3
-	xor rcx, rcx			; aka r1
-	xor rdx, rdx			; aka r2
-	xor rsi, rsi			; aka r6
-	xor rdi, rdi			; aka r7
-	xor rbp, rbp			; aka r5
-	mov rsp, 0x8000			; aka r4
+	xor eax, eax			; aka r0
+	xor ebx, ebx			; aka r3
+	xor ecx, ecx			; aka r1
+	xor edx, edx			; aka r2
+	xor esi, esi			; aka r6
+	xor edi, edi			; aka r7
+	xor ebp, ebp			; aka r5
+	mov esp, 0x8000			; aka r4
 	xor r8, r8
 	xor r9, r9
 	xor r10, r10
@@ -302,7 +299,7 @@ start64:
 
 	mov rax, clearcs64		; Do a proper 64-bit jump. Should not be needed as the ...
 	jmp rax				; jmp SYS64_CODE_SEL:start64 would have sent us ...
-	nop				; out of compatibilty mode and into 64-bit mode
+	nop				; out of compatibility mode and into 64-bit mode
 clearcs64:
 	xor rax, rax
 
@@ -313,12 +310,13 @@ clearcs64:
 	mov [0x000B809E], al
 
 ; Patch Pure64 AP code			; The AP's will be told to start execution at 0x8000
-	mov edi, ap_modify		; We need to remove the BSP Jump call to get the AP's
+	mov edi, start			; We need to remove the BSP Jump call to get the AP's
 	mov eax, 0x90909090		; to fall through to the AP Init code
 	stosd
+	stosb				; Write 5 bytes in total to overwrite the 'far jump'
 
 ; Build the rest of the page tables (4GiB+)
-	mov rcx, 0x0000000000000000
+	xor ecx, ecx			; Clear the counter
 	mov rax, 0x000000010000008F
 	mov rdi, 0x0000000000014000
 buildem:
@@ -393,14 +391,14 @@ make_interrupt_gates: 			; make gates for the other interrupts
 	mov word [0x12*16], exception_gate_18
 	mov word [0x13*16], exception_gate_19
 
-	mov rdi, 0x21			; Set up Keyboard IRQ handler
+	mov rdi, 0x21			; Set up Keyboard handler
 	mov rax, keyboard
 	call create_gate
-	mov rdi, 0x28			; Set up RTC IRQ handler
-	mov rax, rtc
+	mov rdi, 0x22			; Set up Cascade handler
+	mov rax, cascade
 	call create_gate
-	mov rdi, 0xF8			; Set up Spurious handler
-	mov rax, spurious
+	mov rdi, 0x28			; Set up RTC handler
+	mov rax, rtc
 	call create_gate
 
 	lidt [IDTR64]			; load IDT register
@@ -423,7 +421,7 @@ clearmapnext:
 
 	call init_cpu			; Configure the BSP CPU
 
-	call init_ioapic		; Configure the IO-APIC(s), also activate interrupts
+	call init_pic			; Configure the PIC(s), also activate interrupts
 
 ; Debug
 	mov al, '6'			; CPU Init complete
@@ -463,7 +461,7 @@ readnextrecord:
 	lodsd
 	cmp eax, 0			; Are we at the end?
 	je endmemcalc
-	cmp eax, 1			; Usuable RAM
+	cmp eax, 1			; Useable RAM
 	je goodmem
 	cmp eax, 3			; ACPI Reclaimable
 	je goodmem
@@ -550,8 +548,8 @@ nextIOAPIC:
 	jne nextIOAPIC
 
 ; Initialization is now complete... write a message to the screen
-	mov rsi, msg_done
-	call os_print_string
+;	mov rsi, msg_done
+;	call os_print_string
 
 ; Debug
 	mov al, '4'
@@ -576,9 +574,9 @@ nextIOAPIC:
 	call os_print_string
 
 ; Move the trailing binary to its final location
-	mov rsi, 0x8000+6144		; Memory offset to end of pure64.sys
+	mov rsi, 0x8000+PURE64SIZE	; Memory offset to end of pure64.sys
 	mov rdi, 0x100000		; Destination address at the 1MiB mark
-	mov rcx, 0x0D00			; For up to 26KiB kernel (26624 / 8)
+	mov rcx, ((32768 - PURE64SIZE) / 8)
 	rep movsq			; Copy 8 bytes at a time
 
 ; Print a message that the kernel is being started
@@ -588,23 +586,19 @@ nextIOAPIC:
 	call os_print_string
 
 ; Debug
-	mov rdi, 0x000B8092		; Clear the debug messages
-	mov ax, 0x0720
-	mov cx, 7
-clearnext:
-	stosw
-	sub cx, 1
-	cmp cx, 0
-	jne clearnext
+	mov rdi, 0x000B8090		; Clear the debug messages in the top-right corner
+	mov rax, 0x0720072007200720
+	stosq
+	stosq				; Write a total of 8 characters (2 bytes each)
 
 ; Clear all registers (skip the stack pointer)
-	xor rax, rax
-	xor rbx, rbx
-	xor rcx, rcx
-	xor rdx, rdx
-	xor rsi, rsi
-	xor rdi, rdi
-	xor rbp, rbp
+	xor eax, eax			; These 32-bit calls also clear the upper bits of the 64-bit registers
+	xor ebx, ebx
+	xor ecx, ecx
+	xor edx, edx
+	xor esi, esi
+	xor edi, edi
+	xor ebp, ebp
 	xor r8, r8
 	xor r9, r9
 	xor r10, r10
@@ -614,19 +608,49 @@ clearnext:
 	xor r14, r14
 	xor r15, r15
 
-	jmp 0x0000000000100000		; Jump to the kernel
+; Check binary that was loaded and execute
+; Raw binary and PE supported
+; To-Do - ELF
+
+; PE loader header check
+	mov eax, [0x10003c]		; Get the e_lfanew value which is the address of the PE header (32bit).
+	mov cx, [eax + 0x100004]	; The machine type.
+	cmp cx, 0x8664			; Check to make sure the machine type is x64.
+	jne normal_start		; If it isn't equal jump to the normal starting address. (Comment out to ignore result.)
+	mov ebx, [eax + 0x100000]	; The PE header signature is here.
+	cmp ebx, 0x00004550		; Compare the PE header signature to make sure it matches. (little endian)
+	jne normal_start		; If it isn't equal jump to the normal starting address.
+
+; PE loader starting address (RVA) parsing
+	add eax, 0x100028		; Add size of PE header (24 bytes) and offset to
+					; AddressOfEntryPoint (16 bytes) to image base 0x100000
+	mov ebx, [eax]			; AddressOfEntryPoint added to ImageBase to get entry point address
+	add eax, 0x08			; Add the offset to get the ImageBase
+	add ebx, [eax]			; Add ImageBase to AddressOfEntryPoint (ebx)
+
+	xor eax, eax			; Clear rax and rcx; rbx has the jump location so don't clear it.
+	xor ecx, ecx
+
+pe_start:
+	jmp rbx				; rbx has the compute RVA for the jmp
+
+normal_start:
+	xor eax, eax			; Clear registers used earlier
+	xor ebx, ebx
+	xor ecx, ecx
+	jmp 0x0000000000100000
 
 
 %include "init/acpi.asm"
 %include "init/cpu.asm"
-%include "init/ioapic.asm"
+%include "init/pic.asm"
 %include "init/smp.asm"
 %include "syscalls.asm"
 %include "interrupt.asm"
 %include "sysvar.asm"
 
 ; Pad to an even KB file (6 KiB)
-times 6144-($-$$) db 0x90
+times PURE64SIZE-($-$$) db 0x90
 
 
 ; =============================================================================
